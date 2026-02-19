@@ -62,6 +62,10 @@
 #include <stdio.h>
 #include <volk/volk_complex.h>
 
+/* F4TNK: 2× unrolled AVX2+FMA complex multiply — 8 complex/iter (was 4)
+ * Two fully-independent fmaddsub chains expose more ILP to OoO engine.
+ * Reduces loop overhead 2× and hides memory-load latency better on Skylake.
+ * Used by: gr-satnogs channel input scaling, gr-osmosdr sample stream mixing */
 #if LV_HAVE_AVX2 && LV_HAVE_FMA
 #include <immintrin.h>
 /*!
@@ -77,37 +81,37 @@ static inline void volk_32fc_x2_multiply_32fc_u_avx2_fma(lv_32fc_t* cVector,
                                                          unsigned int num_points)
 {
     unsigned int number = 0;
-    const unsigned int quarterPoints = num_points / 4;
+    const unsigned int eighthPoints = num_points / 8; // F4TNK: 2× unroll vs quarterPoints
 
     lv_32fc_t* c = cVector;
     const lv_32fc_t* a = aVector;
     const lv_32fc_t* b = bVector;
 
-    for (; number < quarterPoints; number++) {
+    for (; number < eighthPoints; number++) {
+        // Batch 0: 4 complex from a[0..3], b[0..3]
+        const __m256 x0 = _mm256_loadu_ps((float*)a);
+        const __m256 y0 = _mm256_loadu_ps((float*)b);
+        // Batch 1: 4 complex from a[4..7], b[4..7] — independent of batch 0
+        const __m256 x1 = _mm256_loadu_ps((float*)(a + 4));
+        const __m256 y1 = _mm256_loadu_ps((float*)(b + 4));
 
-        const __m256 x =
-            _mm256_loadu_ps((float*)a); // Load the ar + ai, br + bi as ar,ai,br,bi
-        const __m256 y =
-            _mm256_loadu_ps((float*)b); // Load the cr + ci, dr + di as cr,ci,dr,di
+        const __m256 yl0 = _mm256_moveldup_ps(y0);
+        const __m256 yh0 = _mm256_movehdup_ps(y0);
+        const __m256 yl1 = _mm256_moveldup_ps(y1);
+        const __m256 yh1 = _mm256_movehdup_ps(y1);
 
-        const __m256 yl = _mm256_moveldup_ps(y); // Load yl with cr,cr,dr,dr
-        const __m256 yh = _mm256_movehdup_ps(y); // Load yh with ci,ci,di,di
+        const __m256 tmp0 = _mm256_mul_ps(_mm256_permute_ps(x0, 0xB1), yh0);
+        const __m256 tmp1 = _mm256_mul_ps(_mm256_permute_ps(x1, 0xB1), yh1);
 
-        const __m256 tmp2x = _mm256_permute_ps(x, 0xB1); // Re-arrange x to be ai,ar,bi,br
+        _mm256_storeu_ps((float*)c,       _mm256_fmaddsub_ps(x0, yl0, tmp0));
+        _mm256_storeu_ps((float*)(c + 4), _mm256_fmaddsub_ps(x1, yl1, tmp1));
 
-        const __m256 tmp2 = _mm256_mul_ps(tmp2x, yh); // tmp2 = ai*ci,ar*ci,bi*di,br*di
-
-        const __m256 z = _mm256_fmaddsub_ps(
-            x, yl, tmp2); // ar*cr-ai*ci, ai*cr+ar*ci, br*dr-bi*di, bi*dr+br*di
-
-        _mm256_storeu_ps((float*)c, z); // Store the results back into the C container
-
-        a += 4;
-        b += 4;
-        c += 4;
+        a += 8;
+        b += 8;
+        c += 8;
     }
 
-    number = quarterPoints * 4;
+    number = eighthPoints * 8;
     for (; number < num_points; number++) {
         *c++ = (*a++) * (*b++);
     }
@@ -217,6 +221,7 @@ static inline void volk_32fc_x2_multiply_32fc_generic(lv_32fc_t* cVector,
 #include <stdio.h>
 #include <volk/volk_complex.h>
 
+/* F4TNK: 2× unrolled aligned AVX2+FMA complex multiply — 8 complex/iter */
 #if LV_HAVE_AVX2 && LV_HAVE_FMA
 #include <immintrin.h>
 /*!
@@ -232,37 +237,37 @@ static inline void volk_32fc_x2_multiply_32fc_a_avx2_fma(lv_32fc_t* cVector,
                                                          unsigned int num_points)
 {
     unsigned int number = 0;
-    const unsigned int quarterPoints = num_points / 4;
+    const unsigned int eighthPoints = num_points / 8; // F4TNK: 2× unroll vs quarterPoints
 
     lv_32fc_t* c = cVector;
     const lv_32fc_t* a = aVector;
     const lv_32fc_t* b = bVector;
 
-    for (; number < quarterPoints; number++) {
+    for (; number < eighthPoints; number++) {
+        // Batch 0: 4 complex (aligned)
+        const __m256 x0 = _mm256_load_ps((float*)a);
+        const __m256 y0 = _mm256_load_ps((float*)b);
+        // Batch 1: 4 complex — independent of batch 0
+        const __m256 x1 = _mm256_load_ps((float*)(a + 4));
+        const __m256 y1 = _mm256_load_ps((float*)(b + 4));
 
-        const __m256 x =
-            _mm256_load_ps((float*)a); // Load the ar + ai, br + bi as ar,ai,br,bi
-        const __m256 y =
-            _mm256_load_ps((float*)b); // Load the cr + ci, dr + di as cr,ci,dr,di
+        const __m256 yl0 = _mm256_moveldup_ps(y0);
+        const __m256 yh0 = _mm256_movehdup_ps(y0);
+        const __m256 yl1 = _mm256_moveldup_ps(y1);
+        const __m256 yh1 = _mm256_movehdup_ps(y1);
 
-        const __m256 yl = _mm256_moveldup_ps(y); // Load yl with cr,cr,dr,dr
-        const __m256 yh = _mm256_movehdup_ps(y); // Load yh with ci,ci,di,di
+        const __m256 tmp0 = _mm256_mul_ps(_mm256_permute_ps(x0, 0xB1), yh0);
+        const __m256 tmp1 = _mm256_mul_ps(_mm256_permute_ps(x1, 0xB1), yh1);
 
-        const __m256 tmp2x = _mm256_permute_ps(x, 0xB1); // Re-arrange x to be ai,ar,bi,br
+        _mm256_store_ps((float*)c,       _mm256_fmaddsub_ps(x0, yl0, tmp0));
+        _mm256_store_ps((float*)(c + 4), _mm256_fmaddsub_ps(x1, yl1, tmp1));
 
-        const __m256 tmp2 = _mm256_mul_ps(tmp2x, yh); // tmp2 = ai*ci,ar*ci,bi*di,br*di
-
-        const __m256 z = _mm256_fmaddsub_ps(
-            x, yl, tmp2); // ar*cr-ai*ci, ai*cr+ar*ci, br*dr-bi*di, bi*dr+br*di
-
-        _mm256_store_ps((float*)c, z); // Store the results back into the C container
-
-        a += 4;
-        b += 4;
-        c += 4;
+        a += 8;
+        b += 8;
+        c += 8;
     }
 
-    number = quarterPoints * 4;
+    number = eighthPoints * 8;
     for (; number < num_points; number++) {
         *c++ = (*a++) * (*b++);
     }

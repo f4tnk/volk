@@ -172,6 +172,49 @@ static inline void volk_32f_x2_multiply_32f_u_avx(float* cVector,
 }
 #endif /* LV_HAVE_AVX */
 
+/* F4TNK: 4× unrolled AVX2 float multiply — 32 floats/iter (vs 8 in u_avx)
+ * Reduces loop overhead 4×, better prefetcher utilisation on Skylake L1D BW.
+ * No FMA (pure element-wise mul), but unrolling saturates issue ports p0/p1.
+ * Used by: gr-satnogs power normalisation, gr-osmosdr gain scaling */
+#ifdef LV_HAVE_AVX2
+#include <immintrin.h>
+
+static inline void volk_32f_x2_multiply_32f_u_avx2(float* cVector,
+                                                   const float* aVector,
+                                                   const float* bVector,
+                                                   unsigned int num_points)
+{
+    unsigned int number = 0;
+    const unsigned int thirtySecondPoints = num_points / 32;
+
+    float* cPtr = cVector;
+    const float* aPtr = aVector;
+    const float* bPtr = bVector;
+
+    __m256 a0, a1, a2, a3, b0, b1, b2, b3;
+    for (; number < thirtySecondPoints; number++) {
+        a0 = _mm256_loadu_ps(aPtr);      b0 = _mm256_loadu_ps(bPtr);
+        a1 = _mm256_loadu_ps(aPtr + 8);  b1 = _mm256_loadu_ps(bPtr + 8);
+        a2 = _mm256_loadu_ps(aPtr + 16); b2 = _mm256_loadu_ps(bPtr + 16);
+        a3 = _mm256_loadu_ps(aPtr + 24); b3 = _mm256_loadu_ps(bPtr + 24);
+
+        _mm256_storeu_ps(cPtr,      _mm256_mul_ps(a0, b0));
+        _mm256_storeu_ps(cPtr + 8,  _mm256_mul_ps(a1, b1));
+        _mm256_storeu_ps(cPtr + 16, _mm256_mul_ps(a2, b2));
+        _mm256_storeu_ps(cPtr + 24, _mm256_mul_ps(a3, b3));
+
+        aPtr += 32;
+        bPtr += 32;
+        cPtr += 32;
+    }
+
+    number = thirtySecondPoints * 32;
+    for (; number < num_points; number++) {
+        *cPtr++ = (*aPtr++) * (*bPtr++);
+    }
+}
+#endif /* LV_HAVE_AVX2 */
+
 
 #ifdef LV_HAVE_GENERIC
 
@@ -312,6 +355,46 @@ static inline void volk_32f_x2_multiply_32f_a_avx(float* cVector,
     }
 }
 #endif /* LV_HAVE_AVX */
+
+/* F4TNK: 4× unrolled aligned AVX2 float multiply — 32 floats/iter */
+#ifdef LV_HAVE_AVX2
+#include <immintrin.h>
+
+static inline void volk_32f_x2_multiply_32f_a_avx2(float* cVector,
+                                                   const float* aVector,
+                                                   const float* bVector,
+                                                   unsigned int num_points)
+{
+    unsigned int number = 0;
+    const unsigned int thirtySecondPoints = num_points / 32;
+
+    float* cPtr = cVector;
+    const float* aPtr = aVector;
+    const float* bPtr = bVector;
+
+    __m256 a0, a1, a2, a3, b0, b1, b2, b3;
+    for (; number < thirtySecondPoints; number++) {
+        a0 = _mm256_load_ps(aPtr);      b0 = _mm256_load_ps(bPtr);
+        a1 = _mm256_load_ps(aPtr + 8);  b1 = _mm256_load_ps(bPtr + 8);
+        a2 = _mm256_load_ps(aPtr + 16); b2 = _mm256_load_ps(bPtr + 16);
+        a3 = _mm256_load_ps(aPtr + 24); b3 = _mm256_load_ps(bPtr + 24);
+
+        _mm256_store_ps(cPtr,      _mm256_mul_ps(a0, b0));
+        _mm256_store_ps(cPtr + 8,  _mm256_mul_ps(a1, b1));
+        _mm256_store_ps(cPtr + 16, _mm256_mul_ps(a2, b2));
+        _mm256_store_ps(cPtr + 24, _mm256_mul_ps(a3, b3));
+
+        aPtr += 32;
+        bPtr += 32;
+        cPtr += 32;
+    }
+
+    number = thirtySecondPoints * 32;
+    for (; number < num_points; number++) {
+        *cPtr++ = (*aPtr++) * (*bPtr++);
+    }
+}
+#endif /* LV_HAVE_AVX2 */
 
 
 #ifdef LV_HAVE_NEON

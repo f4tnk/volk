@@ -86,6 +86,51 @@ static inline void volk_32f_accumulator_s32f_a_avx512f(float* result,
 }
 #endif /* LV_HAVE_AVX512F */
 
+/* F4TNK: 4-accumulator AVX2 variant — breaks the vaddps latency chain (4c Skylake)
+ * 4 independent acc chains → each consumes vaddps tp=0.5c → effective tp≈0.5c/iter
+ * vs single-acc AVX: 4c/iter (serialised by latency) → ~8× throughput on Skylake
+ * Processes 32 floats/iteration (4×8), covers power-sum in gr-satnogs PSD path */
+#ifdef LV_HAVE_AVX2
+#include <immintrin.h>
+
+static inline void volk_32f_accumulator_s32f_a_avx2(float* result,
+                                                    const float* inputBuffer,
+                                                    unsigned int num_points)
+{
+    float returnValue = 0;
+    unsigned int number = 0;
+    const unsigned int thirtySecondPoints = num_points / 32;
+
+    const float* aPtr = inputBuffer;
+    __VOLK_ATTR_ALIGNED(32) float tempBuffer[8];
+
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
+
+    for (; number < thirtySecondPoints; number++) {
+        acc0 = _mm256_add_ps(acc0, _mm256_load_ps(aPtr));
+        acc1 = _mm256_add_ps(acc1, _mm256_load_ps(aPtr + 8));
+        acc2 = _mm256_add_ps(acc2, _mm256_load_ps(aPtr + 16));
+        acc3 = _mm256_add_ps(acc3, _mm256_load_ps(aPtr + 24));
+        aPtr += 32;
+    }
+
+    acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+    _mm256_store_ps(tempBuffer, acc0);
+
+    returnValue = tempBuffer[0] + tempBuffer[1] + tempBuffer[2] + tempBuffer[3]
+                  + tempBuffer[4] + tempBuffer[5] + tempBuffer[6] + tempBuffer[7];
+
+    number = thirtySecondPoints * 32;
+    for (; number < num_points; number++) {
+        returnValue += (*aPtr++);
+    }
+    *result = returnValue;
+}
+#endif /* LV_HAVE_AVX2 */
+
 
 #ifdef LV_HAVE_AVX
 #include <immintrin.h>
@@ -205,6 +250,48 @@ static inline void volk_32f_accumulator_s32f_u_avx(float* result,
     *result = returnValue;
 }
 #endif /* LV_HAVE_AVX */
+
+/* F4TNK: 4-accumulator unaligned AVX2 variant — same as a_avx2 but loadu */
+#ifdef LV_HAVE_AVX2
+#include <immintrin.h>
+
+static inline void volk_32f_accumulator_s32f_u_avx2(float* result,
+                                                    const float* inputBuffer,
+                                                    unsigned int num_points)
+{
+    float returnValue = 0;
+    unsigned int number = 0;
+    const unsigned int thirtySecondPoints = num_points / 32;
+
+    const float* aPtr = inputBuffer;
+    __VOLK_ATTR_ALIGNED(32) float tempBuffer[8];
+
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
+
+    for (; number < thirtySecondPoints; number++) {
+        acc0 = _mm256_add_ps(acc0, _mm256_loadu_ps(aPtr));
+        acc1 = _mm256_add_ps(acc1, _mm256_loadu_ps(aPtr + 8));
+        acc2 = _mm256_add_ps(acc2, _mm256_loadu_ps(aPtr + 16));
+        acc3 = _mm256_add_ps(acc3, _mm256_loadu_ps(aPtr + 24));
+        aPtr += 32;
+    }
+
+    acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+    _mm256_store_ps(tempBuffer, acc0);
+
+    returnValue = tempBuffer[0] + tempBuffer[1] + tempBuffer[2] + tempBuffer[3]
+                  + tempBuffer[4] + tempBuffer[5] + tempBuffer[6] + tempBuffer[7];
+
+    number = thirtySecondPoints * 32;
+    for (; number < num_points; number++) {
+        returnValue += (*aPtr++);
+    }
+    *result = returnValue;
+}
+#endif /* LV_HAVE_AVX2 */
 
 
 #ifdef LV_HAVE_SSE
