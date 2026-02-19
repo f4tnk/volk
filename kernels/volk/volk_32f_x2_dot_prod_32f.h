@@ -376,39 +376,51 @@ static inline void volk_32f_x2_dot_prod_32f_u_avx(float* result,
 
 #if LV_HAVE_AVX2 && LV_HAVE_FMA
 #include <immintrin.h>
+/*
+ * F4TNK Mod 5 — AVX2+FMA dot product with 4-accumulator unroll.
+ * Single-accumulator FMA chain on Skylake saturates at only 1/(4-cycle-latency)
+ * = 25% of FMA throughput. 4 independent accumulators saturate the FMA units:
+ * throughput = 4 × 0.5 cycle/op = 2 cy per 4×8=32 floats → ~4× vs single-acc.
+ */
 static inline void volk_32f_x2_dot_prod_32f_u_avx2_fma(float* result,
                                                        const float* input,
                                                        const float* taps,
                                                        unsigned int num_points)
 {
     unsigned int number;
-    const unsigned int eighthPoints = num_points / 8;
+    const unsigned int thirtySecondPoints = num_points / 32;
 
     const float* aPtr = input;
     const float* bPtr = taps;
 
-    __m256 dotProdVal = _mm256_setzero_ps();
-    __m256 aVal1, bVal1;
+    /* 4 independent accumulators to break FMA latency chain (lat=4c, tp=0.5c) */
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
 
-    for (number = 0; number < eighthPoints; number++) {
-
-        aVal1 = _mm256_loadu_ps(aPtr);
-        bVal1 = _mm256_loadu_ps(bPtr);
-        aPtr += 8;
-        bPtr += 8;
-
-        dotProdVal = _mm256_fmadd_ps(aVal1, bVal1, dotProdVal);
+    for (number = 0; number < thirtySecondPoints; number++) {
+        acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(aPtr),      _mm256_loadu_ps(bPtr),      acc0);
+        acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(aPtr + 8),  _mm256_loadu_ps(bPtr + 8),  acc1);
+        acc2 = _mm256_fmadd_ps(_mm256_loadu_ps(aPtr + 16), _mm256_loadu_ps(bPtr + 16), acc2);
+        acc3 = _mm256_fmadd_ps(_mm256_loadu_ps(aPtr + 24), _mm256_loadu_ps(bPtr + 24), acc3);
+        aPtr += 32;
+        bPtr += 32;
     }
 
+    /* Reduce 4 accumulators */
+    acc0 = _mm256_add_ps(acc0, acc1);
+    acc2 = _mm256_add_ps(acc2, acc3);
+    acc0 = _mm256_add_ps(acc0, acc2);
+
     __VOLK_ATTR_ALIGNED(32) float dotProductVector[8];
-    _mm256_storeu_ps(dotProductVector,
-                     dotProdVal); // Store the results back into the dot product vector
+    _mm256_storeu_ps(dotProductVector, acc0);
 
     float dotProduct = dotProductVector[0] + dotProductVector[1] + dotProductVector[2] +
                        dotProductVector[3] + dotProductVector[4] + dotProductVector[5] +
                        dotProductVector[6] + dotProductVector[7];
 
-    for (number = eighthPoints * 8; number < num_points; number++) {
+    for (number = thirtySecondPoints * 32; number < num_points; number++) {
         dotProduct += ((*aPtr++) * (*bPtr++));
     }
 
@@ -760,39 +772,49 @@ static inline void volk_32f_x2_dot_prod_32f_a_avx(float* result,
 
 #if LV_HAVE_AVX2 && LV_HAVE_FMA
 #include <immintrin.h>
+/*
+ * F4TNK Mod 5 — AVX2+FMA dot product with 4-accumulator unroll (aligned).
+ * Same optimization as u_avx2_fma with aligned loads for 32-byte aligned buffers.
+ */
 static inline void volk_32f_x2_dot_prod_32f_a_avx2_fma(float* result,
                                                        const float* input,
                                                        const float* taps,
                                                        unsigned int num_points)
 {
     unsigned int number;
-    const unsigned int eighthPoints = num_points / 8;
+    const unsigned int thirtySecondPoints = num_points / 32;
 
     const float* aPtr = input;
     const float* bPtr = taps;
 
-    __m256 dotProdVal = _mm256_setzero_ps();
-    __m256 aVal1, bVal1;
+    /* 4 independent accumulators to break FMA latency chain (lat=4c, tp=0.5c) */
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
 
-    for (number = 0; number < eighthPoints; number++) {
-
-        aVal1 = _mm256_load_ps(aPtr);
-        bVal1 = _mm256_load_ps(bPtr);
-        aPtr += 8;
-        bPtr += 8;
-
-        dotProdVal = _mm256_fmadd_ps(aVal1, bVal1, dotProdVal);
+    for (number = 0; number < thirtySecondPoints; number++) {
+        acc0 = _mm256_fmadd_ps(_mm256_load_ps(aPtr),      _mm256_load_ps(bPtr),      acc0);
+        acc1 = _mm256_fmadd_ps(_mm256_load_ps(aPtr + 8),  _mm256_load_ps(bPtr + 8),  acc1);
+        acc2 = _mm256_fmadd_ps(_mm256_load_ps(aPtr + 16), _mm256_load_ps(bPtr + 16), acc2);
+        acc3 = _mm256_fmadd_ps(_mm256_load_ps(aPtr + 24), _mm256_load_ps(bPtr + 24), acc3);
+        aPtr += 32;
+        bPtr += 32;
     }
 
+    /* Reduce 4 accumulators */
+    acc0 = _mm256_add_ps(acc0, acc1);
+    acc2 = _mm256_add_ps(acc2, acc3);
+    acc0 = _mm256_add_ps(acc0, acc2);
+
     __VOLK_ATTR_ALIGNED(32) float dotProductVector[8];
-    _mm256_store_ps(dotProductVector,
-                    dotProdVal); // Store the results back into the dot product vector
+    _mm256_store_ps(dotProductVector, acc0);
 
     float dotProduct = dotProductVector[0] + dotProductVector[1] + dotProductVector[2] +
                        dotProductVector[3] + dotProductVector[4] + dotProductVector[5] +
                        dotProductVector[6] + dotProductVector[7];
 
-    for (number = eighthPoints * 8; number < num_points; number++) {
+    for (number = thirtySecondPoints * 32; number < num_points; number++) {
         dotProduct += ((*aPtr++) * (*bPtr++));
     }
 

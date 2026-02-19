@@ -173,6 +173,56 @@ static inline __m256 _mm256_magnitude_ps(__m256 cplxValue1, __m256 cplxValue2)
     return _mm256_sqrt_ps(_mm256_magnitudesquared_ps(cplxValue1, cplxValue2));
 }
 
+/*
+ * AVX2+FMA optimized magnitude squared — F4TNK Mod 1.
+ * Avoids vhaddps (throughput 3 cycles on Skylake) by deinterleaving with
+ * shuffle_ps then computing r²+i² via a single vfmadd213ps + vpermd reorder.
+ *
+ * Throughput vs _mm256_magnitudesquared_ps on Skylake i7-6700:
+ *   hadd path:  2×vmulps + 2×vperm2f128 + vhaddps  → bottleneck hadd tp=3c
+ *   this path:  2×vshufps + vmulps + vfmadd + vpermps → all tp≤1c → ~2-3× faster
+ *
+ * Input:  v1=[r0,i0,r1,i1, r2,i2,r3,i3], v2=[r4,i4,r5,i5, r6,i6,r7,i7]
+ * Output: [|c0|², |c1|², |c2|², |c3|², |c4|², |c5|², |c6|², |c7|²] (natural order)
+ */
+#if defined(LV_HAVE_AVX2) && defined(LV_HAVE_FMA)
+#include <immintrin.h>
+static inline __m256
+_mm256_magnitudesquared_ps_avx2fma(const __m256 v1, const __m256 v2)
+{
+    /* shuffle_ps(a,b,0x88): per 128-bit lane picks a[0],a[2],b[0],b[2] */
+    __m256 r = _mm256_shuffle_ps(v1, v2, 0x88); /* [r0,r1,r4,r5, r2,r3,r6,r7] */
+    __m256 i = _mm256_shuffle_ps(v1, v2, 0xDD); /* [i0,i1,i4,i5, i2,i3,i6,i7] */
+    /* |c|² = r²+i² via fused multiply-add (one rounding vs separate mul+add) */
+    __m256 sq = _mm256_fmadd_ps(r, r, _mm256_mul_ps(i, i));
+    /* sq order: [|c0|²,|c1|²,|c4|²,|c5|², |c2|²,|c3|²,|c6|²,|c7|²]      */
+    /* Restore natural order via AVX2 cross-lane gather (tp=1c on Skylake)   */
+    const __m256i idx = _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7);
+    return _mm256_permutevar8x32_ps(sq, idx);
+}
+
+/*
+ * Fast magnitude ‖c‖ via Newton-Raphson refined rsqrt — F4TNK Mod 2.
+ * sqrt(sq) ≈ sq * (1/sqrt(sq)) using _mm256_rsqrt_nr_ps (~24-bit accuracy).
+ *
+ * Throughput vs vsqrtps on Skylake i7-6700:
+ *   vsqrtps ymm:    throughput 14 cycles/op
+ *   rsqrtps + 3×vfmadd + vmulps: throughput ~8 cycles/op  → ~1.7× faster
+ *
+ * Correctly handles sq==0 → 0.0 (rsqrt(0)=+Inf, 0×Inf=NaN → masked to 0).
+ * Input: magnitude squared (non-negative floats).
+ */
+static inline __m256 _mm256_magnitude_ps_fast(const __m256 sq)
+{
+    const __m256 zero = _mm256_setzero_ps();
+    __m256 rsq = _mm256_rsqrt_nr_ps(sq);       /* 1/sqrt(sq), +Inf for sq==0 */
+    __m256 mag = _mm256_mul_ps(sq, rsq);        /* sq/sqrt(sq) = sqrt(sq), NaN for 0 */
+    /* Zero-mask: clear NaN lanes where sq was 0 */
+    __m256 nonzero = _mm256_cmp_ps(sq, zero, _CMP_NEQ_UQ);
+    return _mm256_and_ps(mag, nonzero);
+}
+#endif /* LV_HAVE_AVX2 && LV_HAVE_FMA */
+
 static inline __m256 _mm256_scaled_norm_dist_ps(const __m256 symbols0,
                                                 const __m256 symbols1,
                                                 const __m256 points0,

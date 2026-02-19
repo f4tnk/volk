@@ -97,6 +97,44 @@ static inline void volk_32fc_magnitude_squared_32f_u_avx(float* magnitudeVector,
 }
 #endif /* LV_HAVE_AVX */
 
+#if defined(LV_HAVE_AVX2) && defined(LV_HAVE_FMA)
+#include <immintrin.h>
+#include <volk/volk_avx_intrinsics.h>
+/*
+ * F4TNK Mod 3 — AVX2+FMA unaligned magnitude squared.
+ * Replaces hadd (tp=3c) with shuffle+fmadd+permutevar8x32 (all tp≤1c).
+ * ~2-3× throughput improvement on Skylake i7-6700 over u_avx.
+ */
+static inline void volk_32fc_magnitude_squared_32f_u_avx2_fma(float* magnitudeVector,
+                                                              const lv_32fc_t* complexVector,
+                                                              unsigned int num_points)
+{
+    unsigned int number = 0;
+    const unsigned int eighthPoints = num_points / 8;
+
+    const float* complexVectorPtr = (float*)complexVector;
+    float* magnitudeVectorPtr = magnitudeVector;
+
+    __m256 cplxValue1, cplxValue2, result;
+    for (; number < eighthPoints; number++) {
+        cplxValue1 = _mm256_loadu_ps(complexVectorPtr);
+        complexVectorPtr += 8;
+        cplxValue2 = _mm256_loadu_ps(complexVectorPtr);
+        complexVectorPtr += 8;
+        result = _mm256_magnitudesquared_ps_avx2fma(cplxValue1, cplxValue2);
+        _mm256_storeu_ps(magnitudeVectorPtr, result);
+        magnitudeVectorPtr += 8;
+    }
+
+    number = eighthPoints * 8;
+    for (; number < num_points; number++) {
+        float val1Real = *complexVectorPtr++;
+        float val1Imag = *complexVectorPtr++;
+        *magnitudeVectorPtr++ = (val1Real * val1Real) + (val1Imag * val1Imag);
+    }
+}
+#endif /* LV_HAVE_AVX2 && LV_HAVE_FMA */
+
 
 #ifdef LV_HAVE_SSE3
 #include <pmmintrin.h>
@@ -234,6 +272,44 @@ static inline void volk_32fc_magnitude_squared_32f_a_avx(float* magnitudeVector,
     }
 }
 #endif /* LV_HAVE_AVX */
+
+#if defined(LV_HAVE_AVX2) && defined(LV_HAVE_FMA)
+#include <immintrin.h>
+#include <volk/volk_avx_intrinsics.h>
+/*
+ * F4TNK Mod 3 — AVX2+FMA aligned magnitude squared.
+ * Replaces hadd (tp=3c) with shuffle+fmadd+permutevar8x32 (all tp≤1c).
+ * ~2-3× throughput improvement on Skylake i7-6700 over a_avx.
+ */
+static inline void volk_32fc_magnitude_squared_32f_a_avx2_fma(float* magnitudeVector,
+                                                              const lv_32fc_t* complexVector,
+                                                              unsigned int num_points)
+{
+    unsigned int number = 0;
+    const unsigned int eighthPoints = num_points / 8;
+
+    const float* complexVectorPtr = (float*)complexVector;
+    float* magnitudeVectorPtr = magnitudeVector;
+
+    __m256 cplxValue1, cplxValue2, result;
+    for (; number < eighthPoints; number++) {
+        cplxValue1 = _mm256_load_ps(complexVectorPtr);
+        complexVectorPtr += 8;
+        cplxValue2 = _mm256_load_ps(complexVectorPtr);
+        complexVectorPtr += 8;
+        result = _mm256_magnitudesquared_ps_avx2fma(cplxValue1, cplxValue2);
+        _mm256_store_ps(magnitudeVectorPtr, result);
+        magnitudeVectorPtr += 8;
+    }
+
+    number = eighthPoints * 8;
+    for (; number < num_points; number++) {
+        float val1Real = *complexVectorPtr++;
+        float val1Imag = *complexVectorPtr++;
+        *magnitudeVectorPtr++ = (val1Real * val1Real) + (val1Imag * val1Imag);
+    }
+}
+#endif /* LV_HAVE_AVX2 && LV_HAVE_FMA */
 
 
 #ifdef LV_HAVE_SSE3

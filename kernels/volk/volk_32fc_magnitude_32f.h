@@ -164,6 +164,49 @@ static inline void volk_32fc_magnitude_32f_u_avx(float* magnitudeVector,
 }
 #endif /* LV_HAVE_AVX */
 
+#if defined(LV_HAVE_AVX2) && defined(LV_HAVE_FMA)
+#include <immintrin.h>
+#include <volk/volk_avx_intrinsics.h>
+/*
+ * F4TNK Mod 4 — AVX2+FMA unaligned magnitude (‖c‖).
+ * Combines hadd-free magnitude squared (F4TNK Mod 1/3) with rsqrt NR
+ * (F4TNK Mod 2) to avoid both vhaddps and vsqrtps bottlenecks.
+ *
+ * Throughput vs u_avx on Skylake i7-6700:
+ *   u_avx:       hadd(tp=3c) + sqrt(tp=14c) → ~17c/8-point iteration
+ *   u_avx2_fma:  shuffle+fmadd+perm(tp≤1c) + rsqrt_nr(tp~8c) → ~9c → ~2× faster
+ */
+static inline void volk_32fc_magnitude_32f_u_avx2_fma(float* magnitudeVector,
+                                                     const lv_32fc_t* complexVector,
+                                                     unsigned int num_points)
+{
+    unsigned int number = 0;
+    const unsigned int eighthPoints = num_points / 8;
+
+    const float* complexVectorPtr = (float*)complexVector;
+    float* magnitudeVectorPtr = magnitudeVector;
+
+    __m256 cplxValue1, cplxValue2, sq, result;
+    for (; number < eighthPoints; number++) {
+        cplxValue1 = _mm256_loadu_ps(complexVectorPtr);
+        complexVectorPtr += 8;
+        cplxValue2 = _mm256_loadu_ps(complexVectorPtr);
+        complexVectorPtr += 8;
+        sq     = _mm256_magnitudesquared_ps_avx2fma(cplxValue1, cplxValue2);
+        result = _mm256_magnitude_ps_fast(sq);
+        _mm256_storeu_ps(magnitudeVectorPtr, result);
+        magnitudeVectorPtr += 8;
+    }
+
+    number = eighthPoints * 8;
+    for (; number < num_points; number++) {
+        float val1Real = *complexVectorPtr++;
+        float val1Imag = *complexVectorPtr++;
+        *magnitudeVectorPtr++ = sqrtf((val1Real * val1Real) + (val1Imag * val1Imag));
+    }
+}
+#endif /* LV_HAVE_AVX2 && LV_HAVE_FMA */
+
 #ifdef LV_HAVE_SSE3
 #include <pmmintrin.h>
 #include <volk/volk_sse3_intrinsics.h>
@@ -330,6 +373,44 @@ static inline void volk_32fc_magnitude_32f_a_avx(float* magnitudeVector,
     }
 }
 #endif /* LV_HAVE_AVX */
+
+#if defined(LV_HAVE_AVX2) && defined(LV_HAVE_FMA)
+#include <immintrin.h>
+#include <volk/volk_avx_intrinsics.h>
+/*
+ * F4TNK Mod 4 — AVX2+FMA aligned magnitude (‖c‖).
+ * Same as u_avx2_fma but uses aligned loads for 32-byte aligned buffers.
+ */
+static inline void volk_32fc_magnitude_32f_a_avx2_fma(float* magnitudeVector,
+                                                     const lv_32fc_t* complexVector,
+                                                     unsigned int num_points)
+{
+    unsigned int number = 0;
+    const unsigned int eighthPoints = num_points / 8;
+
+    const float* complexVectorPtr = (float*)complexVector;
+    float* magnitudeVectorPtr = magnitudeVector;
+
+    __m256 cplxValue1, cplxValue2, sq, result;
+    for (; number < eighthPoints; number++) {
+        cplxValue1 = _mm256_load_ps(complexVectorPtr);
+        complexVectorPtr += 8;
+        cplxValue2 = _mm256_load_ps(complexVectorPtr);
+        complexVectorPtr += 8;
+        sq     = _mm256_magnitudesquared_ps_avx2fma(cplxValue1, cplxValue2);
+        result = _mm256_magnitude_ps_fast(sq);
+        _mm256_store_ps(magnitudeVectorPtr, result);
+        magnitudeVectorPtr += 8;
+    }
+
+    number = eighthPoints * 8;
+    for (; number < num_points; number++) {
+        float val1Real = *complexVectorPtr++;
+        float val1Imag = *complexVectorPtr++;
+        *magnitudeVectorPtr++ = sqrtf((val1Real * val1Real) + (val1Imag * val1Imag));
+    }
+}
+#endif /* LV_HAVE_AVX2 && LV_HAVE_FMA */
 
 #ifdef LV_HAVE_SSE3
 #include <pmmintrin.h>

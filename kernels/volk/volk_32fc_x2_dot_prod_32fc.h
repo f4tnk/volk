@@ -229,61 +229,69 @@ static inline void volk_32fc_x2_dot_prod_32fc_u_avx(lv_32fc_t* result,
 
 #if LV_HAVE_AVX && LV_HAVE_FMA
 #include <immintrin.h>
-
+/*
+ * F4TNK Mod 6 — AVX+FMA complex dot product with 4-accumulator unroll.
+ * Single-accumulator add-chain limits throughput to 4 complex/4-cycles.
+ * 4 independent accumulators process 16 complex/4-cycles → 4× improvement.
+ * Critical for matched filter / symbol sync correlators in LEO decoding.
+ */
 static inline void volk_32fc_x2_dot_prod_32fc_u_avx_fma(lv_32fc_t* result,
                                                         const lv_32fc_t* input,
                                                         const lv_32fc_t* taps,
                                                         unsigned int num_points)
 {
-
-    unsigned int isodd = num_points & 3;
-    unsigned int i = 0;
+    unsigned int isodd = num_points & 0xF; /* remainder after 16-point blocks */
+    unsigned int number = 0;
     lv_32fc_t dotProduct;
     memset(&dotProduct, 0x0, 2 * sizeof(float));
 
-    unsigned int number = 0;
-    const unsigned int quarterPoints = num_points / 4;
+    const unsigned int sixteenthPoints = num_points / 16;
 
-    __m256 x, y, yl, yh, z, tmp1, tmp2, dotProdVal;
+    __m256 x, y, yl, yh, z, tmp1, tmp2;
+    /* 4 independent accumulator vectors to break add-latency chain */
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
 
     const lv_32fc_t* a = input;
     const lv_32fc_t* b = taps;
 
-    dotProdVal = _mm256_setzero_ps();
+#define CPLX_MUL_FMA(dst, av, bv)                                  \
+    do {                                                            \
+        x    = (av);                                               \
+        y    = (bv);                                               \
+        yl   = _mm256_moveldup_ps(y);                              \
+        yh   = _mm256_movehdup_ps(y);                              \
+        tmp1 = x;                                                  \
+        x    = _mm256_shuffle_ps(x, x, 0xB1);                     \
+        tmp2 = _mm256_mul_ps(x, yh);                               \
+        z    = _mm256_fmaddsub_ps(tmp1, yl, tmp2);                 \
+        (dst) = _mm256_add_ps((dst), z);                           \
+    } while (0)
 
-    for (; number < quarterPoints; number++) {
-
-        x = _mm256_loadu_ps((float*)a); // Load a,b,e,f as ar,ai,br,bi,er,ei,fr,fi
-        y = _mm256_loadu_ps((float*)b); // Load c,d,g,h as cr,ci,dr,di,gr,gi,hr,hi
-
-        yl = _mm256_moveldup_ps(y); // Load yl with cr,cr,dr,dr,gr,gr,hr,hr
-        yh = _mm256_movehdup_ps(y); // Load yh with ci,ci,di,di,gi,gi,hi,hi
-
-        tmp1 = x;
-
-        x = _mm256_shuffle_ps(x, x, 0xB1); // Re-arrange x to be ai,ar,bi,br,ei,er,fi,fr
-
-        tmp2 = _mm256_mul_ps(x, yh); // tmp2 = ai*ci,ar*ci,bi*di,br*di ...
-
-        z = _mm256_fmaddsub_ps(
-            tmp1, yl, tmp2); // ar*cr-ai*ci, ai*cr+ar*ci, br*dr-bi*di, bi*dr+br*di
-
-        dotProdVal = _mm256_add_ps(dotProdVal,
-                                   z); // Add the complex multiplication results together
-
-        a += 4;
-        b += 4;
+    for (; number < sixteenthPoints; number++) {
+        CPLX_MUL_FMA(acc0, _mm256_loadu_ps((float*)a),      _mm256_loadu_ps((float*)b));
+        CPLX_MUL_FMA(acc1, _mm256_loadu_ps((float*)(a+4)),  _mm256_loadu_ps((float*)(b+4)));
+        CPLX_MUL_FMA(acc2, _mm256_loadu_ps((float*)(a+8)),  _mm256_loadu_ps((float*)(b+8)));
+        CPLX_MUL_FMA(acc3, _mm256_loadu_ps((float*)(a+12)), _mm256_loadu_ps((float*)(b+12)));
+        a += 16;
+        b += 16;
     }
+#undef CPLX_MUL_FMA
+
+    /* Reduce 4 accumulators */
+    acc0 = _mm256_add_ps(acc0, acc1);
+    acc2 = _mm256_add_ps(acc2, acc3);
+    acc0 = _mm256_add_ps(acc0, acc2);
 
     __VOLK_ATTR_ALIGNED(32) lv_32fc_t dotProductVector[4];
+    _mm256_storeu_ps((float*)dotProductVector, acc0);
+    dotProduct += (dotProductVector[0] + dotProductVector[1] +
+                   dotProductVector[2] + dotProductVector[3]);
 
-    _mm256_storeu_ps((float*)dotProductVector,
-                     dotProdVal); // Store the results back into the dot product vector
-
-    dotProduct += (dotProductVector[0] + dotProductVector[1] + dotProductVector[2] +
-                   dotProductVector[3]);
-
-    for (i = num_points - isodd; i < num_points; i++) {
+    /* Scalar tail for remainder (< 16 complex) */
+    for (unsigned int i = num_points - isodd; i < num_points; i++) {
         dotProduct += input[i] * taps[i];
     }
 
@@ -756,61 +764,64 @@ static inline void volk_32fc_x2_dot_prod_32fc_a_avx(lv_32fc_t* result,
 
 #if LV_HAVE_AVX && LV_HAVE_FMA
 #include <immintrin.h>
-
+/*
+ * F4TNK Mod 6 — AVX+FMA complex dot product with 4-accumulator unroll (aligned).
+ * Same optimization as u_avx_fma with aligned loads for 32-byte aligned buffers.
+ */
 static inline void volk_32fc_x2_dot_prod_32fc_a_avx_fma(lv_32fc_t* result,
                                                         const lv_32fc_t* input,
                                                         const lv_32fc_t* taps,
                                                         unsigned int num_points)
 {
-
-    unsigned int isodd = num_points & 3;
-    unsigned int i = 0;
+    unsigned int isodd = num_points & 0xF;
+    unsigned int number = 0;
     lv_32fc_t dotProduct;
     memset(&dotProduct, 0x0, 2 * sizeof(float));
 
-    unsigned int number = 0;
-    const unsigned int quarterPoints = num_points / 4;
+    const unsigned int sixteenthPoints = num_points / 16;
 
-    __m256 x, y, yl, yh, z, tmp1, tmp2, dotProdVal;
+    __m256 x, y, yl, yh, z, tmp1, tmp2;
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
 
     const lv_32fc_t* a = input;
     const lv_32fc_t* b = taps;
 
-    dotProdVal = _mm256_setzero_ps();
+#define CPLX_MUL_FMA_A(dst, av, bv)                                \
+    do {                                                            \
+        x    = (av);                                               \
+        y    = (bv);                                               \
+        yl   = _mm256_moveldup_ps(y);                              \
+        yh   = _mm256_movehdup_ps(y);                              \
+        tmp1 = x;                                                  \
+        x    = _mm256_shuffle_ps(x, x, 0xB1);                     \
+        tmp2 = _mm256_mul_ps(x, yh);                               \
+        z    = _mm256_fmaddsub_ps(tmp1, yl, tmp2);                 \
+        (dst) = _mm256_add_ps((dst), z);                           \
+    } while (0)
 
-    for (; number < quarterPoints; number++) {
-
-        x = _mm256_load_ps((float*)a); // Load a,b,e,f as ar,ai,br,bi,er,ei,fr,fi
-        y = _mm256_load_ps((float*)b); // Load c,d,g,h as cr,ci,dr,di,gr,gi,hr,hi
-
-        yl = _mm256_moveldup_ps(y); // Load yl with cr,cr,dr,dr,gr,gr,hr,hr
-        yh = _mm256_movehdup_ps(y); // Load yh with ci,ci,di,di,gi,gi,hi,hi
-
-        tmp1 = x;
-
-        x = _mm256_shuffle_ps(x, x, 0xB1); // Re-arrange x to be ai,ar,bi,br,ei,er,fi,fr
-
-        tmp2 = _mm256_mul_ps(x, yh); // tmp2 = ai*ci,ar*ci,bi*di,br*di ...
-
-        z = _mm256_fmaddsub_ps(
-            tmp1, yl, tmp2); // ar*cr-ai*ci, ai*cr+ar*ci, br*dr-bi*di, bi*dr+br*di
-
-        dotProdVal = _mm256_add_ps(dotProdVal,
-                                   z); // Add the complex multiplication results together
-
-        a += 4;
-        b += 4;
+    for (; number < sixteenthPoints; number++) {
+        CPLX_MUL_FMA_A(acc0, _mm256_load_ps((float*)a),      _mm256_load_ps((float*)b));
+        CPLX_MUL_FMA_A(acc1, _mm256_load_ps((float*)(a+4)),  _mm256_load_ps((float*)(b+4)));
+        CPLX_MUL_FMA_A(acc2, _mm256_load_ps((float*)(a+8)),  _mm256_load_ps((float*)(b+8)));
+        CPLX_MUL_FMA_A(acc3, _mm256_load_ps((float*)(a+12)), _mm256_load_ps((float*)(b+12)));
+        a += 16;
+        b += 16;
     }
+#undef CPLX_MUL_FMA_A
+
+    acc0 = _mm256_add_ps(acc0, acc1);
+    acc2 = _mm256_add_ps(acc2, acc3);
+    acc0 = _mm256_add_ps(acc0, acc2);
 
     __VOLK_ATTR_ALIGNED(32) lv_32fc_t dotProductVector[4];
+    _mm256_store_ps((float*)dotProductVector, acc0);
+    dotProduct += (dotProductVector[0] + dotProductVector[1] +
+                   dotProductVector[2] + dotProductVector[3]);
 
-    _mm256_store_ps((float*)dotProductVector,
-                    dotProdVal); // Store the results back into the dot product vector
-
-    dotProduct += (dotProductVector[0] + dotProductVector[1] + dotProductVector[2] +
-                   dotProductVector[3]);
-
-    for (i = num_points - isodd; i < num_points; i++) {
+    for (unsigned int i = num_points - isodd; i < num_points; i++) {
         dotProduct += input[i] * taps[i];
     }
 
