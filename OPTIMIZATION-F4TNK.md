@@ -288,6 +288,29 @@ gr-osmosdr gain scaling (amplitude × constante per-sample).
 
 ---
 
+### Mod 10 — `kernels/volk/volk_32f_s32f_multiply_32f.h`
+
+**Problème** : Ce kernel (vecteur × scalaire) avait uniquement `u_avx`/`a_avx` (8 floats/iter).
+Il est appelé **2 fois dans chaque frame PSD** par `volk_32fc_s32f_power_spectrum_32f` :
+```
+Pipeline PSD complet dans gr-satnogs :
+  volk_32fc_magnitude_squared_32f  ← F4TNK avx2_fma  (Mod 3)
+  volk_32f_s32f_multiply_32f       ← seulement u_avx (8 floats/iter)  ← HOLE
+  volk_32f_log2_32f                ← avx2_fma VOLK standard
+  volk_32f_s32f_multiply_32f       ← seulement u_avx (8 floats/iter)  ← HOLE
+```
+Sans cette optimisation, la chaîne PSD retombait en AVX simple (8 floats/iter)
+malgré le `magnitude_squared` déjà optimisé.
+
+**Solution** : Ajout de `u_avx2` et `a_avx2` avec **4× unroll, 32 floats/iter** —
+`bVal` broadcasté une seule fois dans un registre YMM, 4 `vmulps` indépendants/iter.
+
+**Gain** : ~2× throughput — ferme le dernier trou de la chaîne PSD  
+**Impact LEO** : la chaîne `power_spectral_density_32f` est **entièrement AVX2** désormais
+(magnitude_squared avx2_fma → **s32f_mul avx2** → log2 avx2_fma → **s32f_mul avx2**).
+
+---
+
 ## Résumé des fichiers modifiés
 
 | Fichier | Modification |
@@ -300,6 +323,7 @@ gr-osmosdr gain scaling (amplitude × constante per-sample).
 | `kernels/volk/volk_32f_accumulator_s32f.h` | +`u_avx2`, +`a_avx2` → 4 acc (32 floats/iter, ~8× vs single-acc) |
 | `kernels/volk/volk_32fc_x2_multiply_32fc.h` | Remplacement `u/a_avx2_fma` → 2× unroll (8 cfloat/iter) |
 | `kernels/volk/volk_32f_x2_multiply_32f.h` | +`u_avx2`, +`a_avx2` → 4× unroll (32 floats/iter) |
+| `kernels/volk/volk_32f_s32f_multiply_32f.h` | +`u_avx2`, +`a_avx2` → 4× unroll (32 floats/iter) — ferme trou PSD |
 
 ---
 
@@ -326,6 +350,13 @@ accumulator_u_avx2 4-acc:              PASS
 6/6 PASS
 ```
 
+**Round 3 (complète la chaîne PSD) :**
+```
+s32f_multiply_u_avx2 4x-unroll:  PASS   (delta < 1e-5 vs generic)
+s32f_multiply_a_avx2 4x-unroll:  PASS
+2/2 PASS
+```
+
 ---
 
 ## Impact global sur la station #3762
@@ -341,6 +372,7 @@ ou AX.25 BPSK 1200 bps) passe par ces kernels des **milliers de fois par seconde
 | Correction Doppler (~±3 kHz) | `rotator2` | Kahan+resync (antérieur) | — |
 | Mixing / multiplication IQ | `32fc_x2_multiply_32fc` | — | Mod 8: ~2× (2× unroll) |
 | Gain/scaling amplitude | `32f_x2_multiply_32f` | — | Mod 9: ~2× (4× unroll) |
+| Normalisation PSD per-frame | `32f_s32f_multiply_32f` | — | Mod 10: ~2×, ferme trou PSD |
 | Synchronisation symbole (Gardner) | `magnitude_squared`, `dot_prod_32fc` | Mod 3+6 | — |
 | Viterbi K=7 (AX.25) | `conv_k7_r2` | déjà AVX2+NEON+RVV | — |
 
@@ -383,5 +415,5 @@ Bottlenecks identifiés et corrigés :
 
 ---
 
-> 📝 *Document mis à jour le 19 Février 2026 — Round 2 (9 mods total) — Branche `master-f4tnk`*  
+> 📝 *Document mis à jour le 19 Février 2026 — Round 3 (10 mods total) — Branche `master-f4tnk`*  
 > 🔒 *Modifications spécifiques à l'architecture Skylake (AVX2+FMA) — station SatNOGS #3762*

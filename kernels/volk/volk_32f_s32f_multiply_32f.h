@@ -133,6 +133,46 @@ static inline void volk_32f_s32f_multiply_32f_u_avx(float* cVector,
 }
 #endif /* LV_HAVE_AVX */
 
+/* F4TNK: 4× unrolled AVX2 scalar×vector multiply — 32 floats/iter (was 8 in u_avx)
+ * Used 2× per PSD frame (normFactSq pre/post log2): bottleneck in gr-satnogs
+ * power_spectral_density_ff. 4 independent vmulps chains, bVal broadcast once.
+ * On Skylake: vmulps tp=0.5c × 2 ports = 0.25c/float vs 1c/float in u_avx. */
+#ifdef LV_HAVE_AVX2
+#include <immintrin.h>
+
+static inline void volk_32f_s32f_multiply_32f_u_avx2(float* cVector,
+                                                     const float* aVector,
+                                                     const float scalar,
+                                                     unsigned int num_points)
+{
+    const unsigned int thirtySecondPoints = num_points / 32;
+
+    float* cPtr = cVector;
+    const float* aPtr = aVector;
+
+    const __m256 bVal = _mm256_set1_ps(scalar);
+    __m256 a0, a1, a2, a3;
+    for (unsigned int number = 0; number < thirtySecondPoints; number++) {
+        a0 = _mm256_loadu_ps(aPtr);
+        a1 = _mm256_loadu_ps(aPtr + 8);
+        a2 = _mm256_loadu_ps(aPtr + 16);
+        a3 = _mm256_loadu_ps(aPtr + 24);
+
+        _mm256_storeu_ps(cPtr,      _mm256_mul_ps(a0, bVal));
+        _mm256_storeu_ps(cPtr + 8,  _mm256_mul_ps(a1, bVal));
+        _mm256_storeu_ps(cPtr + 16, _mm256_mul_ps(a2, bVal));
+        _mm256_storeu_ps(cPtr + 24, _mm256_mul_ps(a3, bVal));
+
+        aPtr += 32;
+        cPtr += 32;
+    }
+
+    for (unsigned int number = thirtySecondPoints * 32; number < num_points; number++) {
+        *cPtr++ = (*aPtr++) * scalar;
+    }
+}
+#endif /* LV_HAVE_AVX2 */
+
 #ifdef LV_HAVE_RISCV64
 extern void volk_32f_s32f_multiply_32f_sifive_u74(float* cVector,
                                                   const float* aVector,
@@ -211,6 +251,43 @@ static inline void volk_32f_s32f_multiply_32f_a_avx(float* cVector,
     }
 }
 #endif /* LV_HAVE_AVX */
+
+/* F4TNK: 4× unrolled aligned AVX2 scalar×vector multiply — 32 floats/iter */
+#ifdef LV_HAVE_AVX2
+#include <immintrin.h>
+
+static inline void volk_32f_s32f_multiply_32f_a_avx2(float* cVector,
+                                                     const float* aVector,
+                                                     const float scalar,
+                                                     unsigned int num_points)
+{
+    const unsigned int thirtySecondPoints = num_points / 32;
+
+    float* cPtr = cVector;
+    const float* aPtr = aVector;
+
+    const __m256 bVal = _mm256_set1_ps(scalar);
+    __m256 a0, a1, a2, a3;
+    for (unsigned int number = 0; number < thirtySecondPoints; number++) {
+        a0 = _mm256_load_ps(aPtr);
+        a1 = _mm256_load_ps(aPtr + 8);
+        a2 = _mm256_load_ps(aPtr + 16);
+        a3 = _mm256_load_ps(aPtr + 24);
+
+        _mm256_store_ps(cPtr,      _mm256_mul_ps(a0, bVal));
+        _mm256_store_ps(cPtr + 8,  _mm256_mul_ps(a1, bVal));
+        _mm256_store_ps(cPtr + 16, _mm256_mul_ps(a2, bVal));
+        _mm256_store_ps(cPtr + 24, _mm256_mul_ps(a3, bVal));
+
+        aPtr += 32;
+        cPtr += 32;
+    }
+
+    for (unsigned int number = thirtySecondPoints * 32; number < num_points; number++) {
+        *cPtr++ = (*aPtr++) * scalar;
+    }
+}
+#endif /* LV_HAVE_AVX2 */
 
 #ifdef LV_HAVE_NEON
 #include <arm_neon.h>
